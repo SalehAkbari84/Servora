@@ -1,0 +1,179 @@
+# =============================================================================
+# SERVORA - MySQL 8.0 Recommended Configuration
+# نسخه: 3.0.0
+# =============================================================================
+# این فایل برای یک سرور اختصاصی با 8GB RAM و workload OLTP طراحی شده است.
+# قبل از اعمال هر بخش را با شرایط واقعی سرور تطبیق دهید.
+# مسیر معمول: /etc/mysql/mysql.conf.d/servora.cnf (Debian/Ubuntu)
+#             /etc/my.cnf.d/servora.cnf (RHEL/CentOS)
+# =============================================================================
+
+[mysqld]
+
+# =============================================================================
+# REPLICATION & BINARY LOG
+# =============================================================================
+
+# ROW format اجباری است:
+# تمام stored procedures و functions با NOT DETERMINISTIC علامت‌گذاری شده‌اند
+# اما برای اطمینان از replication safety با ROW replication، این باید مشخص باشد.
+# با STATEMENT: stored procedures روی replica ممکن است نتایج متفاوتی بدهند
+# (به‌خصوص RAND(), UUID(), NOW() در stored code).
+binlog_format                   = ROW
+
+# row image = FULL: تمام column‌ها در binary log نوشته می‌شوند
+# برای debugging و point-in-time recovery کامل‌تر
+binlog_row_image                = FULL
+
+# حفظ binary log برای 7 روز (برای replica catchup و PITR)
+binlog_expire_logs_seconds      = 604800
+
+# حجم هر binary log file
+max_binlog_size                 = 256M
+
+# =============================================================================
+# TRANSACTION ISOLATION
+# =============================================================================
+
+# READ COMMITTED بهتر از REPEATABLE READ برای این workload:
+# - gap lock کمتر → deadlock احتمال کمتر
+# - SKIP LOCKED (در ClaimPendingNotifications) با READ COMMITTED بهتر کار می‌کند
+# - ForUpdate در CancelAppointment و VerifyBusiness فقط row lock می‌گیرد نه gap
+# توجه: phantom read ممکن است — اما business logic ما به آن حساس نیست.
+transaction_isolation           = READ-COMMITTED
+
+# =============================================================================
+# EVENT SCHEDULER
+# =============================================================================
+
+# evt_expire_stale_queue (هر 1 ساعت) به این نیاز دارد
+event_scheduler                 = ON
+
+# =============================================================================
+# INNODB BUFFER POOL
+# =============================================================================
+
+# 50-60% RAM برای سرور اختصاصی MySQL
+# برای 8GB RAM: 4-5GB مناسب است
+innodb_buffer_pool_size         = 4G
+
+# تعداد instances برای کاهش mutex contention (1 per GB buffer pool)
+innodb_buffer_pool_instances    = 4
+
+# =============================================================================
+# INNODB REDO LOG
+# =============================================================================
+
+# MySQL 8.0.30+: redo log capacity
+# برای نسخه‌های قدیم‌تر از innodb_log_file_size استفاده کنید
+# innodb_redo_log_capacity       = 1G
+
+# برای MySQL < 8.0.30:
+innodb_log_file_size            = 256M
+innodb_log_files_in_group       = 2
+
+# =============================================================================
+# INNODB DURABILITY & PERFORMANCE
+# =============================================================================
+
+# = 1: هر commit به disk flush می‌شود (ACID compliant) — تغییر ندهید
+innodb_flush_log_at_trx_commit  = 1
+
+# = 2: fsync به O_DSYNC تبدیل می‌شود (بستگی به سخت‌افزار دارد)
+innodb_flush_method             = O_DIRECT
+
+# تعداد thread‌های I/O (پیش‌فرض 4 — برای SSD بیشتر کنید)
+innodb_read_io_threads          = 8
+innodb_write_io_threads         = 8
+
+# =============================================================================
+# LOCK & DEADLOCK
+# =============================================================================
+
+# تایم‌اوت انتظار برای lock (ثانیه)
+# پیش‌فرض 50 خیلی زیاد است — با این مقدار کاربر سریع‌تر خطا می‌گیرد
+# SP‌های ما SELECT FOR UPDATE دارند — timeout کوتاه باعث بهتر شدن UX می‌شود
+innodb_lock_wait_timeout        = 15
+
+# فعال بودن deadlock detection (پیش‌فرض ON است — صریح می‌نویسیم)
+innodb_deadlock_detect          = ON
+
+# تمام deadlock‌ها را در error log ثبت کن (مهم برای debugging)
+innodb_print_all_deadlocks      = ON
+
+# MySQL 8.0.25+: جزئیات بیشتر deadlock در performance_schema
+# log_deadlocks                  = ON
+
+# =============================================================================
+# CONNECTION & THREAD
+# =============================================================================
+
+max_connections                 = 300
+
+# thread cache برای کاهش overhead ساخت thread
+thread_cache_size               = 50
+
+# =============================================================================
+# QUERY & SLOW LOG
+# =============================================================================
+
+slow_query_log                  = ON
+slow_query_log_file             = /var/log/mysql/slow.log
+
+# query‌هایی که بیشتر از 1 ثانیه طول می‌کشند log می‌شوند
+long_query_time                 = 1
+
+# query‌هایی که از index استفاده نمی‌کنند هم log می‌شوند
+log_queries_not_using_indexes   = ON
+
+# جلوگیری از flood کردن log با query‌های بدون index (حداکثر 100 در دقیقه)
+log_throttle_queries_not_using_indexes = 100
+
+# =============================================================================
+# ERROR LOG
+# =============================================================================
+
+log_error                       = /var/log/mysql/error.log
+log_error_verbosity             = 2
+
+# =============================================================================
+# CHARACTER SET
+# =============================================================================
+
+character_set_server            = utf8mb4
+collation_server                = utf8mb4_persian_ci
+
+# =============================================================================
+# PERFORMANCE SCHEMA
+# =============================================================================
+
+# برای monitoring locking و wait events
+performance_schema              = ON
+
+# فعال‌سازی instruments مهم:
+# (در MySQL 8 بیشتر به‌صورت پیش‌فرض فعال هستند)
+# performance_schema_instrument  = '%lock%=ON'
+
+# =============================================================================
+# TEMP TABLE & SORT
+# =============================================================================
+
+# ClaimPendingNotifications از MEMORY temporary table استفاده می‌کند
+# این مقدار باید بزرگ‌تر از max batch size باشد
+tmp_table_size                  = 32M
+max_heap_table_size             = 32M
+
+# =============================================================================
+# GENERAL QUERY CACHE (MySQL 8.0: حذف شده — نگذارید)
+# =============================================================================
+# query_cache_type = 0  (در MySQL 8 این گزینه وجود ندارد)
+
+# =============================================================================
+# TIMEZONE
+# =============================================================================
+
+# مشخص‌سازی صریح timezone برای اطمینان از یکسان بودن NOW() در همه جا
+# اگر سرور Tehran است:
+# default_time_zone              = '+03:30'
+# اگر UTC است (توصیه می‌شود در production):
+default_time_zone               = '+00:00'
